@@ -1,5 +1,3 @@
-# src/optimize_ensemble.py
-
 import pandas as pd
 import numpy as np
 import optuna
@@ -7,36 +5,52 @@ import yaml
 import os
 from sklearn.metrics import log_loss
 
-MODEL_LIST = ["lightgbm", "xgboost", "catboost"]
 VAL_PRED_DIR = "outputs/val_preds"
 LABEL_PATH = "outputs/val_labels.csv"
 OUTPUT_YAML = "ensemble_weights_optimized.yaml"
 
-def load_validation_data():
-    label_df = pd.read_csv(LABEL_PATH)
+def get_available_models():
+    files = os.listdir(VAL_PRED_DIR)
+    models = [f.replace("_val.csv", "") for f in files if f.endswith("_val.csv")]
+    return sorted(models)
+
+def load_validation_data(model_list):
+    label_df = pd.read_csv(LABEL_PATH, dtype={"msno": str})
     preds = []
-    for model in MODEL_LIST:
-        pred_df = pd.read_csv(f"{VAL_PRED_DIR}/{model}_val.csv")
+    for model in model_list:
+        pred_path = os.path.join(VAL_PRED_DIR, f"{model}_val.csv")
+        if not os.path.exists(pred_path):
+            print(f"⚠️ Warning: {pred_path} not found, skipping.")
+            continue
+        pred_df = pd.read_csv(pred_path, dtype={"msno": str})
         pred_df = pred_df.rename(columns={"is_churn_pred": model})
         preds.append(pred_df)
     merged = label_df
     for df in preds:
         merged = merged.merge(df, on="msno", how="left")
+    merged = merged.dropna()  # 保守策略：只保留完整样本
     return merged
 
-def objective(trial, df):
-    weights = [trial.suggest_float(f"w_{m}", 0, 1) for m in MODEL_LIST]
+def objective(trial, df, model_list):
+    weights = [trial.suggest_float(f"w_{m}", 0, 1) for m in model_list]
     weights = np.array(weights)
-    weights /= weights.sum()  # normalize
-    blended = sum(df[m] * w for m, w in zip(MODEL_LIST, weights))
+    weights /= weights.sum()
+    blended = sum(df[m] * w for m, w in zip(model_list, weights))
     return log_loss(df["is_churn"], blended)
 
 def main():
     print("🔍 Optimizing ensemble weights based on validation log loss...")
-    df = load_validation_data()
+
+    model_list = get_available_models()
+    if not model_list:
+        print("❌ No model prediction files found in val_preds/.")
+        return
+
+    print(f"📦 Detected models: {model_list}")
+    df = load_validation_data(model_list)
 
     study = optuna.create_study(direction="minimize")
-    study.optimize(lambda trial: objective(trial, df), n_trials=50)
+    study.optimize(lambda trial: objective(trial, df, model_list), n_trials=50)
 
     best_weights = study.best_params
     total = sum(best_weights.values())

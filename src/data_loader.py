@@ -14,6 +14,9 @@ def load_csv(filename, usecols=None):
 
 def load_train_data(sample=SAMPLE, sample_size=SAMPLE_SIZE):
     df = load_csv(FILES["train"])
+
+    logger.info(f"sample = {sample}")
+
     if sample:
         df = df.sample(n=sample_size, random_state=RANDOM_SEED)
         logger.info(f"Sampled {sample_size} users from train data.")

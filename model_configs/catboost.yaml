@@ -1,0 +1,23 @@
+categorical_features:
+  - city
+  - gender
+  - registered_via
+  - reg_year
+  - reg_month
+
+default_params:
+  loss_function: Logloss
+  eval_metric: Logloss
+  iterations: 1000
+  learning_rate: 0.05
+  depth: 6
+  l2_leaf_reg: 3.0
+  random_seed: 42
+  verbose: false
+
+tune_space:
+  learning_rate: float, 0.01, 0.2
+  depth: int, 4, 10
+  l2_leaf_reg: float, 1.0, 10.0
+  bagging_temperature: float, 0.0, 1.0
+  border_count: int, 32, 255
