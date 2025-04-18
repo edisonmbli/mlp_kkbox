@@ -12,5 +12,11 @@ env/
 # 忽略 Jupyter Notebook 的检查点
 .ipynb_checkpoints/
 
+# 忽略 outputs 文件夹及其内容
+outputs/    
+
+# 忽略 notebooks 文件夹及其内容
+notebooks/
+
 # 忽略日志文件
 *.log
