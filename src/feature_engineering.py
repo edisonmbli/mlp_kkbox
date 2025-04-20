@@ -13,6 +13,12 @@ def extract_user_profile_features(members_df):
     df["is_age_missing"] = df["bd"].isna().astype(int)
     return df[["msno", "city", "bd", "gender", "registered_via", "reg_year", "reg_month", "is_gender_missing", "is_age_missing"]]
 
+def filter_behavior_by_expire(df, expire_df, date_col):
+    df[date_col] = pd.to_datetime(df[date_col], format="%Y%m%d")
+    expire_df["last_expire_date"] = pd.to_datetime(expire_df["last_expire_date"])
+    df = df.merge(expire_df, on="msno", how="left")
+    return df[df[date_col] < df["last_expire_date"]]
+
 def extract_transaction_features(transactions_df):
     df = transactions_df.copy()
     df["transaction_date"] = pd.to_datetime(df["transaction_date"], format="%Y%m%d")
@@ -101,14 +107,18 @@ def extract_behavior_trend_features(full_log_df, recent_log_df):
     merged["activity_drop"] = (merged["recent_7_active_days"] < (merged["active_days"] / 4)).astype(int)
     return merged[["msno", "secs_change_rate", "activity_drop"]]
 
-def merge_all_features(train_df, members_df, transactions_df, logs_df):
+def merge_all_features(train_df, members_df, transactions_df, logs_df, expire_df):
+    # 过滤行为数据
+    tx_filtered = filter_behavior_by_expire(transactions_df, expire_df, "transaction_date")
+    logs_filtered = filter_behavior_by_expire(logs_df, expire_df, "date")
+
     f1 = extract_user_profile_features(members_df)
-    f2 = extract_transaction_features(transactions_df)
-    f3 = extract_time_gap_features(transactions_df, members_df)
-    f4 = extract_user_log_features(logs_df)
-    f5 = extract_recent_user_log_features(logs_df, days=7)
-    f6 = extract_recent_user_log_features(logs_df, days=30)
-    f7 = extract_behavior_trend_features(logs_df, logs_df)
+    f2 = extract_transaction_features(tx_filtered)
+    f3 = extract_time_gap_features(tx_filtered, members_df)
+    f4 = extract_user_log_features(logs_filtered)
+    f5 = extract_recent_user_log_features(logs_filtered, days=7)
+    f6 = extract_recent_user_log_features(logs_filtered, days=30)
+    f7 = extract_behavior_trend_features(logs_filtered, logs_filtered)
 
     features = train_df[["msno", "is_churn"]].merge(f1, on="msno", how="left")
     features = features.merge(f2, on="msno", how="left")

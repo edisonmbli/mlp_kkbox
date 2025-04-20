@@ -1,3 +1,5 @@
+# src/models/lightgbm_model.py
+
 import lightgbm as lgb
 import pandas as pd
 import joblib
@@ -16,7 +18,12 @@ class LightGBMModel:
                 X_train[col] = X_train[col].astype("category")
                 X_val[col] = X_val[col].astype("category")
 
-        self.model = lgb.LGBMClassifier(**self.params)
+        params = self.params.copy()
+        # params["objective"] = "binary"
+        # params["verbose"] = -1  # 关闭 warning 输出
+
+        self.model = lgb.LGBMClassifier(**params)
+
         self.model.fit(
             X_train, y_train,
             eval_set=[(X_val, y_val)],
@@ -25,8 +32,8 @@ class LightGBMModel:
 
     def prepare_input(self, X_ref, X_new):
         for col in self.categorical_features:
-            if col in X_ref.columns:
-                X_ref[col] = X_ref[col].astype("category")
+            if col in X_new.columns:
+                X_new[col] = X_new[col].astype("category")
         return align_categorical_features(X_ref, X_new, self.categorical_features)
 
     def predict_proba(self, X, X_ref=None):
@@ -43,3 +50,7 @@ class LightGBMModel:
 
     def load(self, path):
         self.model = joblib.load(path)
+
+    @property
+    def feature_importances_(self):
+        return self.model.feature_importances_

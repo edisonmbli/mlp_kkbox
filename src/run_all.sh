@@ -17,4 +17,9 @@ mv ensemble_weights_optimized.yaml ensemble_weights.yaml
 echo "📈 Step 5: Re-running pipeline with updated weights (no retraining)..."
 python -m src.auto_pipeline
 
+echo "📈 Step 6: Running prediction for each model..."
+python -m src.predict --model_type lightgbm
+python -m src.predict --model_type xgboost
+python -m src.predict --model_type catboost
+
 echo "✅ All steps completed. Check outputs/submissions/ for your final submission file."

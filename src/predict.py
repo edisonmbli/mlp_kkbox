@@ -1,3 +1,5 @@
+# src/predict.py
+
 import argparse
 import os
 import json
@@ -6,7 +8,7 @@ from datetime import datetime
 
 from src.data_loader import load_all_data
 from src.model_router import load_model_class, load_model_config
-from src.utils.preprocessing import generate_test_features
+from src.utils.preprocessing import generate_test_features_cached
 from src.model_registry import MODEL_REGISTRY
 
 MODEL_DIR = "outputs/models"
@@ -16,9 +18,10 @@ SAMPLE_SUB_PATH = "data/raw/sample_submission_v2.csv"
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_type", type=str, required=True, choices=list(MODEL_REGISTRY.keys()), help="Which model to predict")
-    parser.add_argument("--sample", type=bool, default=False)
+    parser.add_argument("--sample", action="store_true", help="Use sampled data")
     parser.add_argument("--sample_size", type=int, default=10000)
     parser.add_argument("--submission_name", type=str, default=None)
+    parser.add_argument("--force_reload", action="store_true", help="Force regenerate test features")
     args = parser.parse_args()
 
     print(f"🚀 Running prediction with model: {args.model_type}")
@@ -26,12 +29,19 @@ def main():
     model_class = load_model_class(args.model_type)
     config = load_model_config(args.model_type)
 
-    train_df, transactions_df, logs_df, members_df = load_all_data(sample=args.sample, sample_size=args.sample_size)
-    test_features = generate_test_features(SAMPLE_SUB_PATH, members_df, transactions_df, logs_df)
-    X_test = test_features.drop(columns=["msno", "is_churn"])
+    _, _, transactions_df, logs_df, members_df = load_all_data(sample=args.sample, sample_size=args.sample_size)
 
-    train_features = generate_test_features(SAMPLE_SUB_PATH, members_df, transactions_df, logs_df)
-    X_ref = train_features.drop(columns=["msno", "is_churn"])
+    test_features = generate_test_features_cached(
+        members_df=members_df,
+        transactions_df=transactions_df,
+        logs_df=logs_df,
+        sample_submission_path=SAMPLE_SUB_PATH,
+        cache_path="data/processed/test_features.parquet",
+        force_reload=args.force_reload
+    )
+
+    X_test = test_features.drop(columns=["msno", "is_churn"])
+    X_ref = X_test  # 用于对齐分类特征
 
     with open(f"params/{args.model_type}_best_params.json", "r") as f:
         best_params = json.load(f)

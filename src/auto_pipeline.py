@@ -1,18 +1,23 @@
 # src/auto_pipeline.py
 
+import argparse
 import os
 import subprocess
 import json
 import pandas as pd
 import yaml
 from datetime import datetime
-from sklearn.model_selection import train_test_split
 
 from src.data_loader import load_all_data
 from src.feature_engineering import merge_all_features
 from src.model_router import load_model_class, load_model_config
 from src.utils.evaluation import save_validation_outputs
-from src.utils.preprocessing import generate_test_features
+from src.utils.evaluation import print_dataset_stats
+from src.utils.preprocessing import get_or_cache_features
+from src.utils.preprocessing import generate_test_features_cached
+from src.utils.logger import get_logger
+
+logger = get_logger("auto_pipeline")
 
 PARAM_DIR = "params"
 MODEL_DIR = "outputs/models"
@@ -44,25 +49,52 @@ def run_tuning_if_needed(model_type):
             "python", "-m", "src.tune_model",
             "--model_type", model_type,
             "--n_trials", "30"
-            # "--sample", "False"
         ])
     else:
         print(f"✅ Found existing params for {model_type}, skipping tuning.")
 
-def train_and_predict(model_type, train_df, transactions_df, logs_df, members_df):
-    print(f"🧠 Training {model_type}...")
+def train_and_predict(model_type, train_set, val_set, transactions, logs, members):
+    logger.info(f"🧠 Training {model_type}...")
     config = load_model_config(model_type)
     model_class = load_model_class(model_type)
 
-    features = merge_all_features(train_df, members_df, transactions_df, logs_df)
-    msno = features["msno"]
-    X = features.drop(columns=["msno", "is_churn"])
-    y = features["is_churn"]
+    # 合并训练集和验证集用于特征构造
+    full_df = pd.concat([train_set, val_set], axis=0)
+    expire_df = full_df[["msno", "last_expire_date"]].copy()
 
-    X_train, X_val, y_train, y_val, msno_train, msno_val = train_test_split(
-        X, y, msno, test_size=0.2, stratify=y, random_state=42
+    features = get_or_cache_features(
+        cache_path="data/processed/train_features.parquet",
+        batch_mode=True,
+        batch_args={
+            "full_df": full_df,
+            "members_df": members,
+            "transactions_df": transactions,
+            "logs_df": logs,
+            "expire_df": expire_df,
+            "batch_size": 50000
+        },
+        force_reload=False
     )
 
+    # 拆分训练/验证特征
+    train_feat = features[features["msno"].isin(train_set["msno"])]
+    val_feat = features[features["msno"].isin(val_set["msno"])]
+
+    # 过滤掉标签缺失的样本
+    logger.warning(f"训练集中缺失标签的样本数: {train_feat['is_churn'].isna().sum()}")
+    logger.warning(f"验证集中缺失标签的样本数: {val_feat['is_churn'].isna().sum()}")
+    train_feat = train_feat[train_feat["is_churn"].notna()]
+    val_feat = val_feat[val_feat["is_churn"].notna()]
+    print_dataset_stats("train", train_feat)
+    print_dataset_stats("val", val_feat)
+
+    X_train = train_feat.drop(columns=["msno", "is_churn"])
+    X_val = val_feat.drop(columns=["msno", "is_churn"])
+    y_train = train_feat["is_churn"].astype(int)
+    y_val = val_feat["is_churn"].astype(int)
+    msno_val = val_feat["msno"]
+
+    # 加载调参结果
     with open(f"{PARAM_DIR}/{model_type}_best_params.json", "r") as f:
         best_params = json.load(f)
 
@@ -74,21 +106,30 @@ def train_and_predict(model_type, train_df, transactions_df, logs_df, members_df
 
     model_path = f"{MODEL_DIR}/{model_type}_model.pkl"
     model.save(model_path)
-    print(f"✅ Model saved to {model_path}")
+    logger.info(f"✅ Model saved to {model_path}")
 
-    print(f"📈 Predicting with {model_type}...")
-    test_features = generate_test_features(SAMPLE_SUB_PATH, members_df, transactions_df, logs_df)
+    logger.info(f"📈 Predicting with {model_type}...")
+    test_features = generate_test_features_cached(
+        members_df=members,
+        transactions_df=transactions,
+        logs_df=logs,
+        sample_submission_path=SAMPLE_SUB_PATH,
+        cache_path="data/processed/test_features.parquet",
+        force_reload=False
+    )
+
     X_test = test_features.drop(columns=["msno", "is_churn"])
-    y_test_pred = model.predict_proba(X_test, X_ref=X)
+    y_test_pred = model.predict_proba(X_test, X_ref=X_train)
 
     pred_df = pd.DataFrame({"msno": test_features["msno"], "is_churn": y_test_pred})
     pred_path = f"{PRED_DIR}/{model_type}_pred.csv"
     pred_df.to_csv(pred_path, index=False)
-    print(f"📄 Prediction saved to {pred_path}")
+    logger.info(f"📄 Prediction saved to {pred_path}")
     return pred_df
 
+
 def blend_predictions(model_preds, weights):
-    print("🔗 Blending predictions...")
+    logger.info("🔗 Blending predictions...")
     blended = model_preds[0].copy()
     blended["is_churn"] = 0
     for pred, w in zip(model_preds, weights):
@@ -97,30 +138,30 @@ def blend_predictions(model_preds, weights):
 
 def main():
     ensure_dirs()
-    print("🚀 Starting full pipeline...")
+    logger.info("🚀 Starting full pipeline...")
 
-    try:
-        model_list, weights = load_model_list_from_weights()
-    except FileNotFoundError:
-        print("⚠ No ensemble_weights.yaml found. Please run optimize_ensemble.py first.")
-        return
+    # 加载模型列表和权重
+    model_list, weights = load_model_list_from_weights()
+    logger.info(f"📦 Models to run: {model_list}")
+    logger.info(f"📊 Weights: {weights}")
 
-    print(f"📦 Models to run: {model_list}")
-    print(f"📊 Weights: {weights}")
+    # 加载数据 
+    train_set, val_set, transactions, logs, members = load_all_data(sample=False)
 
-    train_df, transactions_df, logs_df, members_df = load_all_data(sample=False)
-
+    # 运行调参
+    logger.info("🔧 Running tuning for each model...")
     model_preds = []
     for model_type in model_list:
         run_tuning_if_needed(model_type)
-        pred_df = train_and_predict(model_type, train_df, transactions_df, logs_df, members_df)
+        pred_df = train_and_predict(model_type, train_set, val_set, transactions, logs, members)
         model_preds.append(pred_df)
 
+    # 融合预测
     final_pred = blend_predictions(model_preds, weights)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     submission_path = f"{SUBMISSION_DIR}/submission_blended_{timestamp}.csv"
     final_pred.to_csv(submission_path, index=False)
-    print(f"✅ Final submission saved to {submission_path}")
+    logger.info(f"✅ Final submission saved to {submission_path}")
 
 if __name__ == "__main__":
     main()

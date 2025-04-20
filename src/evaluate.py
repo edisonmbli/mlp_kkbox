@@ -4,15 +4,17 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score, log_loss, roc_curve
 import numpy as np
 
-def evaluate_model(y_true, y_pred, model, feature_names, model_type="lightgbm"):
+def evaluate_model(y_true, y_pred, model, feature_names, model_type="lightgbm", save_path=None):
     print("📊 Evaluation Results:")
-    print(f"Log Loss: {log_loss(y_true, y_pred):.5f}")
-    print(f"AUC Score: {roc_auc_score(y_true, y_pred):.5f}")
+    logloss = log_loss(y_true, y_pred)
+    auc = roc_auc_score(y_true, y_pred)
+    print(f"Log Loss: {logloss:.5f}")
+    print(f"AUC Score: {auc:.5f}")
 
     # ROC 曲线
     fpr, tpr, _ = roc_curve(y_true, y_pred)
     plt.figure(figsize=(6, 4))
-    plt.plot(fpr, tpr, label=f"AUC = {roc_auc_score(y_true, y_pred):.4f}")
+    plt.plot(fpr, tpr, label=f"AUC = {auc:.4f}")
     plt.plot([0, 1], [0, 1], linestyle="--", color="gray")
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
@@ -20,14 +22,16 @@ def evaluate_model(y_true, y_pred, model, feature_names, model_type="lightgbm"):
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
+    if save_path:
+        plt.savefig(f"{save_path}_roc.png")
     plt.show()
 
     # 特征重要性
     try:
-        if model_type == "lightgbm":
+        if hasattr(model, "feature_importances_"):
             importances = model.feature_importances_
-        elif model_type == "xgboost":
-            importances = model.feature_importances_
+        elif hasattr(model, "model") and hasattr(model.model, "feature_importances_"):
+            importances = model.model.feature_importances_
         elif model_type == "catboost":
             importances = model.get_feature_importance()
         else:
@@ -43,6 +47,8 @@ def evaluate_model(y_true, y_pred, model, feature_names, model_type="lightgbm"):
         plt.title("Top 20 Feature Importances")
         plt.xlabel("Importance")
         plt.tight_layout()
+        if save_path:
+            plt.savefig(f"{save_path}_importance.png")
         plt.show()
 
     except Exception as e:
